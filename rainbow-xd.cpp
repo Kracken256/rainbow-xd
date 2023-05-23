@@ -418,7 +418,7 @@ void print_help(void)
     println("  Written by Wesley Charles Jones.");
     println("");
     println("COPYRIGHT:");
-    println("  Copyright © 2023 Wesley Charles Jones.  License GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>.");
+    println("  Copyright © 2023 Wesley Charles Jones.  License GPLv2+: GNU GPL version 2 or later <https://gnu.org/licenses/gpl.html>.");
     println("  This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.");
     println("");
     println("SEE ALSO:");

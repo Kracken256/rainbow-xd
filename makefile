@@ -7,7 +7,7 @@
 
 # Compiler
 CC = g++
-CPPFLAGS = -Wall -std=c++17 -O3
+CPPFLAGS = -Wall -std=c++17 -O3 -static
 
 # Files
 SRC = rainbow-xd.cpp

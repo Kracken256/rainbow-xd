@@ -27,7 +27,7 @@
  * With rainbow-xd, the tedium of manual color assignment becomes a thing of the
  * past. Our cutting-edge technology employs advanced algorithms, meticulously
  * crafted over several hours, to autonomously discover and deterministically
- * assign colors to patterns of any length, ranging from 1 to 35 bytes. Brace
+ * assign colors to patterns of any length, ranging from 2 to 32 bytes. Brace
  * yourself for a mesmerizing display of 256 distinct hues that effortlessly
  * reveal the inner workings of your binary files.
  *
@@ -56,6 +56,7 @@
 #include <iomanip>
 #include <stdio.h>
 #include <cstring>
+#include <sys/ioctl.h>
 
 /*
  * If you need to extract the binary data from the colored output of this program,
@@ -69,7 +70,7 @@
  *    $ touch output.bin; truncate -s0 output.bin; for LINE in $(cat rainbow-input.txt | ansi2txt | cut -d ' ' -f 1); do echo -n $LINE | head -c 128 | hex -d >> output.bin; done
 
  * Note: The above command will process each line of the 'rainbow-input.txt' file,
- * extract the first 128 characters, convert them from hex to binary, and append
+ * extract the first 128 characters (64 bytes decoded), convert them from hex to binary, and append
  * the result to 'output.bin'.
 
  * If you want to view the colored output using the 'less' pager, you can add
@@ -78,8 +79,7 @@
 */
 
 #ifdef _WIN32
-
-// It is not working with windows 16 color console
+// It does not work with windows 16 color console.
 static_assert(false, "Windows terminal is not supported yet");
 #include <io.h>
 #include <fcntl.h>
@@ -88,14 +88,15 @@ static_assert(false, "Windows terminal is not supported yet");
 #endif
 
 #define VERSION_ID "0.3.0"
+#define CHUNK_SIZE 1024
 
-#define CHUNK_SIZE 4096
+// lowercase hex. Undefine to use uppercase hex.
 
 std::vector<uint8_t> colors_list;
 typedef uint8_t byte;
 typedef std::vector<byte> byte_vector;
-std::map<byte_vector, uint32_t> patterns_dict;
-uint16_t bytes_per_row = 64;
+std::map<byte_vector, uint16_t> patterns_dict;
+uint16_t bytes_per_row = 32;
 uint64_t color_pallet = 0;
 
 static const uint64_t crc64_table[256] = {
@@ -357,7 +358,11 @@ static const uint64_t crc64_table[256] = {
     UINT64_C(0x29b7d047efec8728),
 };
 
-static const char *hex_chars_lookup_table = "0123456789abcdef";
+static const char *hex_chars_lookup_table_lower = "0123456789abcdef";
+
+static const char *hex_chars_lookup_table_upper = "0123456789ABCDEF";
+
+static char const *hex_chars_lookup_table = (char const *)hex_chars_lookup_table_lower;
 
 inline static uint64_t crc64(const byte *data, size_t length)
 {
@@ -372,53 +377,70 @@ inline static uint64_t crc64(const byte *data, size_t length)
     return crc ^ 0xFFFFFFFFFFFFFFFFULL;
 }
 
+#define ROTRIGHT(a, b) (((a) >> (b)) | ((a) << (64 - (b))))
+
+// My own hash/checksum algorithm fn1
+#define permute_box1(a, b, c, d)                                          \
+    *a ^= ROTRIGHT(((*a ^ *b) & ~*c) + 1, 20) << (ROTRIGHT(*d, 12) % 14); \
+    *b ^= ROTRIGHT(((*b ^ *c) & ~*d) + 1, 26) << (ROTRIGHT(*a, 17) % 14); \
+    *c ^= ROTRIGHT(((*c ^ *d) & ~*a) + 1, 15) << (ROTRIGHT(*b, 29) % 14); \
+    *d ^= ROTRIGHT(((*d ^ *a) & ~*b) + 1, 37) << (ROTRIGHT(*c, 47) % 14);
+
+// My own hash/checksum algorithm fn2
+#define permute_box2(a, b, c, d)                               \
+    *a ^= ROTRIGHT(((*a & *b) ^ ~*c), (*d % 64)) >> (*a % 16); \
+    *b ^= ROTRIGHT(((*b & *c) ^ ~*d), (*c % 63)) >> (*b % 17); \
+    *c ^= ROTRIGHT(((*c & *d) ^ ~*a), (*b % 62)) >> (*c % 18); \
+    *d ^= ROTRIGHT(((*d & *a) ^ ~*b), (*a % 61)) >> (*d % 19);
+
 inline static byte get_color(byte_vector &pattern)
 {
+    // Note: i tried just using crc64 but it wasn't doing well for short patterns and low entropy `color_pallet` values.
+    // // This works now as is.
+    // My propietary algorithm for awesome color selection.
     // Compute color based on pattern bytes.
-    // This should be okay
-    uint64_t check_r1 = color_pallet, check_r2;
-    for (size_t i = 0; i < pattern.size(); i++)
-    {
-        check_r1 ^= pattern[i] << (i % 64);
-        check_r2 += pattern[i] << ((i + 5) % 64);
-    }
-    check_r1 = crc64((byte *)&check_r1, sizeof(check_r1));
-    check_r2 = crc64((byte *)&check_r2, sizeof(check_r2));
+    // Get entropy from this data (make output more random/higher quality)
+    uint64_t Iv = color_pallet;
+    uint64_t Si = crc64(pattern.data(), pattern.size());
+    uint64_t Sj = crc64(pattern.data(), (pattern.size() / 2) + 1);
+    uint64_t Sk = crc64(pattern.data() + pattern.size() / 2, (pattern.size() / 2) + 1);
 
-    check_r1 = check_r1 ^ check_r2;
+    // Call my own hash/checksum algorithms
+    permute_box1(&Iv, &Si, &Sj, &Sk);
+    permute_box2(&Iv, &Si, &Sj, &Sk);
 
-    check_r1 = colors_list[check_r1 % colors_list.size()];
+    // Squach it down to 64 bits
+    uint64_t checksum = Iv ^ Si ^ Sj ^ Sk;
 
-    // I am not racist, but I dont like black color on black terminal.
-    if (check_r1 == 0)
-    {
-        check_r1 = 1;
-    }
+    // Xor with my birthday (i think that is the right number)!
+    checksum ^= 0x40f3b534;
 
-    return check_r1;
+    // Finally, modulo reduce it to the size of the color pallet (256).
+    uint64_t theGrandColor = colors_list[checksum % colors_list.size()];
+
+    // Return the color
+    return theGrandColor;
 }
 
-inline static std::string translate_ascii_dump(const byte_vector &input)
+inline static std::string make_ascii_dump(const byte_vector &input)
 {
     std::string output;
     size_t input_size = input.size();
-    output.resize(input_size + 4);
-    output[0] = ' ';
-    output[1] = '|';
+    output.resize(input_size + 19);
+    output = "\033[38;5;250m |";
 
     for (size_t i = 0; i < input_size; i++)
     {
         if (input[i] >= 0x20 && input[i] <= 0x7E)
         {
-            output[i + 2] = input[i];
+            output += input[i];
         }
         else
         {
-            output[i + 2] = '.';
+            output += '.';
         }
     }
-    output[input_size + 2] = '|';
-    output[input_size + 3] = '\n';
+    output += "|\033[0m\n";
 
     return output;
 }
@@ -426,7 +448,6 @@ inline static std::string translate_ascii_dump(const byte_vector &input)
 int rainbow_fd_dump(FILE *file)
 {
     int file_fd = fileno(file);
-
     std::array<byte, CHUNK_SIZE> current_chunk;
     patterns_dict.clear();
 
@@ -438,22 +459,28 @@ int rainbow_fd_dump(FILE *file)
     }
     size_t bytes_read = bytes_read_stat;
 
-    std::string bytes_buffer;
+    std::string bytes_buffer = "";
     bytes_buffer.reserve(3 * CHUNK_SIZE);
+    size_t current_pos = 0;
+    size_t offset = 0; // Initialize the offset to 0
     while (bytes_read > 0)
     {
         for (size_t i = 0; i < bytes_read; i++)
         {
-            size_t max_j = std::min(bytes_read - i, static_cast<size_t>(36));
+            size_t max_j = std::min(bytes_read - i, static_cast<size_t>(33));
 
-            for (size_t j = 2; j <= max_j; j++)
+            for (size_t j = 3; j <= max_j; j++)
             {
                 byte_vector pattern_bytes(current_chunk.begin() + i, current_chunk.begin() + i + j);
 
-                std::map<byte_vector, uint32_t>::iterator it = patterns_dict.find(pattern_bytes);
+                std::map<byte_vector, uint16_t>::iterator it = patterns_dict.find(pattern_bytes);
                 if (it != patterns_dict.end())
                 {
-                    it->second += 1;
+                    // add of not max
+                    if (it->second < 65535)
+                    {
+                        it->second++;
+                    }
                 }
                 else
                 {
@@ -461,6 +488,7 @@ int rainbow_fd_dump(FILE *file)
                 }
             }
         }
+
         bytes_buffer.clear();
         size_t i = 0;
         size_t current_line_len = 0;
@@ -469,7 +497,7 @@ int rainbow_fd_dump(FILE *file)
         {
             bool found_pattern = false;
 
-            for (size_t j = 35; j > 1; j--)
+            for (size_t j = 32; j > 2; j--)
             {
                 if (i + j <= bytes_read)
                 {
@@ -480,6 +508,21 @@ int rainbow_fd_dump(FILE *file)
                         size_t k = 0;
                         while (k < pattern_bytes.size())
                         {
+                            if (current_line_len == 0)
+                            {
+                                // Print the offset at the beginning of the line
+                                std::stringstream ss3;
+                                ss3 << "\033[38;5;250m";
+                                if (hex_chars_lookup_table == hex_chars_lookup_table_upper)
+                                {
+                                    ss3 << std::uppercase;
+                                }
+                                ss3 << std::setw(8) << std::setfill('0') << std::hex << offset;
+                                ss3 << "\033[0m";
+                                bytes_buffer += ss3.str();
+                                bytes_buffer += "  ";
+                            }
+
                             size_t j = std::min(pattern_bytes.size() - k, bytes_per_row - current_line_len);
                             int endPos = k + j;
                             ss1.str(std::string());
@@ -496,13 +539,15 @@ int rainbow_fd_dump(FILE *file)
                             if (current_line_len == bytes_per_row)
                             {
                                 // Print ascii
-                                bytes_buffer += translate_ascii_dump(byte_vector(current_chunk.begin() + i + j - current_line_len, current_chunk.begin() + i + j));
+                                bytes_buffer += make_ascii_dump(byte_vector(current_chunk.begin() + i + j - current_line_len, current_chunk.begin() + i + j));
 
                                 current_line_len = 0;
                             }
+
                             k += j;
                         }
                         i += j;
+                        offset += j;
                         found_pattern = true;
                         break;
                     }
@@ -510,30 +555,52 @@ int rainbow_fd_dump(FILE *file)
             }
             if (!found_pattern)
             {
+                if (current_line_len == 0)
+                {
+                    // Print the offset at the beginning of the line
+                    std::stringstream ss3;
+                    ss3 << "\033[38;5;250m";
+                    ss3 << std::setw(8) << std::setfill('0') << std::hex << offset;
+                    ss3 << "\033[0m";
+                    bytes_buffer += ss3.str();
+                    bytes_buffer += "  ";
+                }
                 ss2.str(std::string());
-                ss2 << "\033[38;5;245m";
                 ss2 << hex_chars_lookup_table[current_chunk[i] >> 4];
                 ss2 << hex_chars_lookup_table[current_chunk[i] & 0x0F];
-                ss2 << "\033[0m";
+
                 bytes_buffer += ss2.str();
                 current_line_len += 1;
                 if (current_line_len == bytes_per_row)
                 {
                     // Print ascii
-                    bytes_buffer += translate_ascii_dump(byte_vector(current_chunk.begin() + i - current_line_len, current_chunk.begin() + i));
+                    bytes_buffer += make_ascii_dump(byte_vector(current_chunk.begin() + i - current_line_len, current_chunk.begin() + i));
                     current_line_len = 0;
                 }
+                offset++;
                 i++;
             }
         }
         // Print ascii last line
-        // TODO: Fix this formula. It is wrong if length if data is < bytes_per_row
         if (current_line_len > 0)
         {
+            std::stringstream ss3;
+            ss3 << "\033[38;5;250m";
+            if (hex_chars_lookup_table == hex_chars_lookup_table_upper)
+            {
+                ss3 << std::uppercase;
+            }
+            ss3 << std::setw(8) << std::setfill('0') << std::hex << offset << ' ';
+            ss3 << "\033[0m";
+            // bytes_buffer.insert(bytes_buffer.find_last_of('\n') + 1, ss3.str());
+            bytes_buffer.replace(bytes_buffer.find_last_of('\n') + 1, 24, ss3.str());
+
             bytes_buffer += std::string((bytes_per_row - current_line_len) * 2, ' ');
-            bytes_buffer += translate_ascii_dump(byte_vector(current_chunk.begin() + i - current_line_len, current_chunk.begin() + i));
+            bytes_buffer += make_ascii_dump(byte_vector(current_chunk.begin() + i - current_line_len, current_chunk.begin() + i));
+            bytes_read = bytes_read_stat;
         }
         std::cout << bytes_buffer;
+        current_pos += bytes_read;
         bytes_read_stat = read(file_fd, current_chunk.data(), CHUNK_SIZE);
         if (bytes_read_stat < 0)
         {
@@ -569,9 +636,14 @@ void print_help(void)
     println("Options:");
     println("  -m <color iv>  Set a initialization vector/nonce for the color pattet. <color> a 64 bit integer.");
     println("  -c <cols>      Set the number of bytes per row. Default is 32.");
-    println("  -h (many more) Print this help message.");
+    println("  -h             Print this help message.");
     println("  -v (--version) Print version information.");
-    println("  '-'           Read from stdin.");
+    println("  -U             Prints in uppercase hexadecimals.");
+    println("  '-'            Read from stdin.");
+    println("");
+    println("Note:");
+    println("  Many more aliases are available for all the options. For example, -h == -? == --help.");
+    println("  The parameters have been idiot proofed.");
     println("");
     println("Colors pattern codes:");
     println("  I made this as simple as possible. Just pick a number (default of 0) and that will");
@@ -603,7 +675,7 @@ void print_help(void)
 int main(int argc, char **argv)
 {
     std::vector<std::string> arguments(argv + 1, argv + argc);
-
+    std::string exename = argv[0];
     std::string filepath;
     bool mode_stdin = false;
     bool should_exit = false;
@@ -625,13 +697,13 @@ int main(int argc, char **argv)
         }
         else if (s == "-m")
         {
-            // get 16 bit color code
+            // get 64 bit color code
             if (i + 1 < arguments.size())
             {
                 std::string color_code = arguments[i + 1];
                 try
                 {
-                    uint64_t color = std::stol(color_code, nullptr, 16);
+                    uint64_t color = std::stoull(color_code, nullptr, 10);
 
                     color_pallet = color;
                     i++;
@@ -656,31 +728,40 @@ int main(int argc, char **argv)
                 std::string num_cols = arguments[i + 1];
                 try
                 {
-                    uint16_t cols = (uint16_t)std::stoull(num_cols);
+                    uint64_t cols = (uint64_t)std::stoull(num_cols);
                     if (cols < 1 || cols > 0xFFFF)
                     {
                         std::cout << "Invalid number of columns: " << num_cols << std::endl;
+                        std::cout << "Must be between 1 and 65535" << std::endl;
                         should_exit = true;
                     }
-                    bytes_per_row = cols;
-                    i++;
+                    else
+                    {
+                        bytes_per_row = (uint16_t)cols;
+                        i++;
+                    }
                 }
                 catch (std::exception &e)
                 {
                     std::cout << "Invalid number of columns: " << num_cols << std::endl;
+                    std::cout << "The number of columns must be a number between 1 and 65535" << std::endl;
                     should_exit = true;
                 }
             }
             else
             {
-                std::cout << "Missing number of columns" << std::endl;
+                std::cout << "You did not specify the number of columns after '-c'" << std::endl;
                 should_exit = true;
             }
         }
-        else if (s == "-v" || s == "--version")
+        else if (s == "-v" || s == "--version" || s == "-version" || s == "-V")
         {
             should_print_version = true;
             should_exit = true;
+        }
+        else if (s == "-U" || s == "--uppercase" || s == "--upper")
+        {
+            hex_chars_lookup_table = (char const *)hex_chars_lookup_table_upper;
         }
         // help. HELP ME GOD DAMN IT!!!
         // This is idiot proof. I don't want to deal with people who don't know how to use a command line.
@@ -692,6 +773,7 @@ int main(int argc, char **argv)
         else
         {
             std::cout << "Unknown argument: " << s << std::endl;
+            std::cout << "Try '" << exename << " --help' for more information." << std::endl;
             should_exit = true;
         }
         i++;
@@ -722,6 +804,20 @@ int main(int argc, char **argv)
         fclose(file);
         return err;
     }
-    // dump from stdin
-    rainbow_fd_dump(stdin);
+    // This is also idiot proof.
+    // Check if stdin is sending data
+    // Why don't all cli tools do this?
+    int count;
+    ioctl(fileno(stdin), FIONREAD, &count);
+
+    if (count > 0)
+    {
+        return rainbow_fd_dump(stdin);
+    }
+    else
+    {
+        println("!![ERROR]!! No data to available read. Specify a file or pass data to STDIN\n");
+        print_help();
+        return 0;
+    }
 }

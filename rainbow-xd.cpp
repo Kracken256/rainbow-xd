@@ -97,7 +97,7 @@ typedef uint8_t byte;
 typedef std::vector<byte> byte_vector;
 std::map<byte_vector, uint16_t> patterns_dict;
 uint16_t bytes_per_row = 32;
-uint64_t color_pallet = 0;
+uint64_t color_pallet = 9; // Makes 0's gray.
 
 static const uint64_t crc64_table[256] = {
     UINT64_C(0x0000000000000000),
@@ -379,13 +379,6 @@ inline static uint64_t crc64(const byte *data, size_t length)
 
 #define ROTRIGHT(a, b) (((a) >> (b)) | ((a) << (64 - (b))))
 
-// My own hash/checksum algorithm fn1
-#define permute_box1(a, b, c, d)                                          \
-    *a ^= ROTRIGHT(((*a ^ *b) & ~*c) + 1, 20) << (ROTRIGHT(*d, 12) % 14); \
-    *b ^= ROTRIGHT(((*b ^ *c) & ~*d) + 1, 26) << (ROTRIGHT(*a, 17) % 14); \
-    *c ^= ROTRIGHT(((*c ^ *d) & ~*a) + 1, 15) << (ROTRIGHT(*b, 29) % 14); \
-    *d ^= ROTRIGHT(((*d ^ *a) & ~*b) + 1, 37) << (ROTRIGHT(*c, 47) % 14);
-
 // My own hash/checksum algorithm fn2
 #define permute_box2(a, b, c, d)                               \
     *a ^= ROTRIGHT(((*a & *b) ^ ~*c), (*d % 64)) >> (*a % 16); \
@@ -396,27 +389,26 @@ inline static uint64_t crc64(const byte *data, size_t length)
 inline static byte get_color(byte_vector &pattern)
 {
     // Note: i tried just using crc64 but it wasn't doing well for short patterns and low entropy `color_pallet` values.
-    // // This works now as is.
+    // This works now as is.
     // My propietary algorithm for awesome color selection.
     // Compute color based on pattern bytes.
     // Get entropy from this data (make output more random/higher quality)
-    uint64_t Iv = color_pallet;
+    uint64_t Iv = color_pallet + pattern.size();
     uint64_t Si = crc64(pattern.data(), pattern.size());
-    uint64_t Sj = crc64(pattern.data(), (pattern.size() / 2) + 1);
-    uint64_t Sk = crc64(pattern.data() + pattern.size() / 2, (pattern.size() / 2) + 1);
+    uint64_t Sj = 0xffe25f0a1f5d66d5; // This is just a random constant
+    uint64_t Sk = 0x7db878d0a9faf4d4; // This is just a random constant
 
     // Call my own hash/checksum algorithms
-    permute_box1(&Iv, &Si, &Sj, &Sk);
+    // permute_box1(&Iv, &Si, &Sj, &Sk);
     permute_box2(&Iv, &Si, &Sj, &Sk);
 
-    // Squach it down to 64 bits
-    uint64_t checksum = Iv ^ Si ^ Sj ^ Sk;
+    // Squach it down to 8 bit with modulo reduction
+    uint8_t index = (Iv ^ Si ^ Sj ^ Sk) % colors_list.size();
 
     // Xor with my birthday (i think that is the right number)!
-    checksum ^= 0x40f3b534;
+    // checksum ^= 0x40f3b534;
 
-    // Finally, modulo reduce it to the size of the color pallet (256).
-    uint64_t theGrandColor = colors_list[checksum % colors_list.size()];
+    uint64_t theGrandColor = colors_list[index];
 
     // Return the color
     return theGrandColor;
@@ -445,6 +437,8 @@ inline static std::string make_ascii_dump(const byte_vector &input)
     return output;
 }
 
+// This function is a mess, but it works.
+// It probably could be optimized a lot.
 int rainbow_fd_dump(FILE *file)
 {
     int file_fd = fileno(file);
@@ -520,7 +514,7 @@ int rainbow_fd_dump(FILE *file)
                                 ss3 << std::setw(8) << std::setfill('0') << std::hex << offset;
                                 ss3 << "\033[0m";
                                 bytes_buffer += ss3.str();
-                                bytes_buffer += "  ";
+                                bytes_buffer += " ";
                             }
 
                             size_t j = std::min(pattern_bytes.size() - k, bytes_per_row - current_line_len);
@@ -560,14 +554,20 @@ int rainbow_fd_dump(FILE *file)
                     // Print the offset at the beginning of the line
                     std::stringstream ss3;
                     ss3 << "\033[38;5;250m";
+                    if (hex_chars_lookup_table == hex_chars_lookup_table_upper)
+                    {
+                        ss3 << std::uppercase;
+                    }
                     ss3 << std::setw(8) << std::setfill('0') << std::hex << offset;
                     ss3 << "\033[0m";
                     bytes_buffer += ss3.str();
-                    bytes_buffer += "  ";
+                    bytes_buffer += " ";
                 }
                 ss2.str(std::string());
+                ss2 << "\033[38;5;245m";
                 ss2 << hex_chars_lookup_table[current_chunk[i] >> 4];
                 ss2 << hex_chars_lookup_table[current_chunk[i] & 0x0F];
+                ss2 << "\033[0m";
 
                 bytes_buffer += ss2.str();
                 current_line_len += 1;
@@ -592,7 +592,6 @@ int rainbow_fd_dump(FILE *file)
             }
             ss3 << std::setw(8) << std::setfill('0') << std::hex << offset << ' ';
             ss3 << "\033[0m";
-            // bytes_buffer.insert(bytes_buffer.find_last_of('\n') + 1, ss3.str());
             bytes_buffer.replace(bytes_buffer.find_last_of('\n') + 1, 24, ss3.str());
 
             bytes_buffer += std::string((bytes_per_row - current_line_len) * 2, ' ');

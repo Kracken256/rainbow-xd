@@ -22,3 +22,6 @@ rainbow-xd: $(SRC)
 clean:
 	rm -f rainbow-xd
 	
+
+install:
+	cp rainbow-xd /usr/bin/rainbow-xd

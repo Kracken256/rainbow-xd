@@ -1,5 +1,7 @@
 # rainbow-xd
 
+### If you find this code useful, please leave a star star.  ⭐
+
 Introducing rainbow-xd: Unveiling the Vibrant Spectrum of Data Analysis!
 
 Are you weary of sifting through mundane monocolor hexdumps? Are you craving a revolutionary solution that harnesses the power of pattern recognition? Look no further! rainbow-xd is the ultimate tool that will unlock the true potential of your data. Whether you're a cryptoanalyst searching for repeating sequences or a data enthusiast seeking sequential patterns, rainbow-xd is your answer!
@@ -11,3 +13,5 @@ Unlock the power of rainbow-xd and immerse yourself in a world of vivid data ana
 Experience the future of data analysis today with rainbow-xd. Revolutionize your workflow, enhance your efficiency, and unlock hidden patterns with ease. Say goodbye to monotonous hexdumps and say hello to the vibrant spectrum of rainbow-xd!
 
 rainbow-xd is now available for FREE!!!
+
+#### If you find this code useful, please leave a star star.  ⭐

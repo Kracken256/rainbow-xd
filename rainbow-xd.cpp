@@ -803,20 +803,6 @@ int main(int argc, char **argv)
         fclose(file);
         return err;
     }
-    // This is also idiot proof.
-    // Check if stdin is sending data
-    // Why don't all cli tools do this?
-    int count;
-    ioctl(fileno(stdin), FIONREAD, &count);
 
-    if (count > 0)
-    {
-        return rainbow_fd_dump(stdin);
-    }
-    else
-    {
-        println("!![ERROR]!! No data to available read. Specify a file or pass data to STDIN\n");
-        print_help();
-        return 0;
-    }
+    return rainbow_fd_dump(stdin);
 }
